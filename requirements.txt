@@ -3,6 +3,5 @@ streamlit-mic-recorder
 librosa
 numpy<2.0.0
 plotly
-praat-parselmouth
+pydub
 soundfile
-ffmpeg

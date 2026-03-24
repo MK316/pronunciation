@@ -1,0 +1,7 @@
+streamlit
+streamlit-mic-recorder
+librosa
+numpy
+plotly
+parselmouth-python
+soundfile

@@ -3,12 +3,13 @@ import librosa
 import numpy as np
 import io
 import plotly.graph_objects as go
-from pydub import AudioSegment
+from pydub import AudioSegment, AudioOps
 from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 
-st.set_page_config(page_title="Rhythm Analyzer v2.7", layout="wide")
+st.set_page_config(page_title="Rhythm Analyzer v2.8", layout="wide")
 
+# 세션 관리
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
 if 'widget_id' not in st.session_state:
@@ -19,137 +20,113 @@ def reset_app():
     st.session_state.widget_id += 1
     st.rerun()
 
-st.title("📊 Step 1: Fluency & Rhythm Analyzer")
-target_sentence = "The quick brown fox jumps over the lazy dog."
-st.info(f"**Target Sentence:** {target_sentence}")
-
-# --- [수정] 원어민 베이스라인 생성 로직 (속도 왜곡 방지) ---
-@st.cache_resource
-def get_native_baseline(text):
-    tts = gTTS(text=text, lang='en', tld='com')
-    mp3_fp = io.BytesIO()
-    tts.write_to_fp(mp3_fp)
-    mp3_fp.seek(0)
+# --- [공통 분석 엔진] 원어민과 학생 모두 이 함수를 통과함 ---
+def analyze_rhythm(audio_bytes, is_native=False):
+    # 1. WAV 변환 및 로드
+    audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+    # 노이즈 게이트 적용: 미세 잡음 제거 (학생 녹음 환경 고려)
+    audio_segment = audio_segment.set_frame_rate(16000).set_channels(1)
     
-    audio = AudioSegment.from_file(mp3_fp, format="mp3")
     wav_io = io.BytesIO()
-    audio.export(wav_io, format="wav")
+    audio_segment.export(wav_io, format="wav")
     wav_io.seek(0)
     
-    y, sr = librosa.load(wav_io, sr=None)
-    # [핵심 수정] 원어민 음원은 무음 제거를 아주 살짝만 함 (top_db를 60으로 완화)
-    y_trim, _ = librosa.effects.trim(y, top_db=60)
-    dur = librosa.get_duration(y=y_trim, sr=sr)
+    y, sr = librosa.load(wav_io, sr=16000)
     
-    # 음절 수 계산 (단어 수 * 가중치 1.45)
-    word_count = len(text.split())
-    syllables = word_count * 1.45
+    # 2. 강도 정규화 (소리 크기를 동일하게 맞춤)
+    y = librosa.util.normalize(y)
     
-    # 에너지 기반 휴지 분석 (원어민은 거의 0이어야 함)
+    # 3. Trimming (앞뒤 무음 제거 - 기준 통일)
+    # 원어민과 학생 모두 35dB 기준으로 동일하게 자름
+    y_trim, _ = librosa.effects.trim(y, top_db=35)
+    duration = librosa.get_duration(y=y_trim, sr=sr)
+    
+    # 4. 에너지 분석 (RMS)
     rms = librosa.feature.rms(y=y_trim)[0]
     rms_db = librosa.amplitude_to_db(rms, ref=np.max)
-    is_silent = rms_db < -40 # 아주 미세한 소리도 발화로 인정
+    frame_dur = duration / len(rms)
+    
+    # 휴지 탐지 기준 (두 데이터 모두 동일 적용)
+    # -30dB 이하를 무음으로 간주
+    is_silent = rms_db < -30
     
     pauses = []
     curr = 0
-    frame_dur = dur / len(rms)
     for s in is_silent:
         if s: curr += frame_dur
         else:
             if curr > 0: pauses.append(curr)
             curr = 0
             
-    return {
-        'rate': (syllables / dur) * 60,
-        'staccato': len([d for d in pauses if 0.05 <= d < 0.25]),
-        'pause': len([d for d in pauses if d >= 0.25]),
-        'wav_bytes': wav_io.getvalue(),
-        'duration': dur
-    }
+    # 지표 계산
+    staccato = len([d for d in pauses if 0.05 <= d < 0.25])
+    long_pause = len([d for d in pauses if d >= 0.25])
+    
+    # 속도 계산용 음절 추정 (단어수 기반 고정)
+    word_count = 9 # "The quick brown fox jumps over the lazy dog."
+    rate = ((word_count * 1.4) / duration) * 60
+    
+    return {'rate': rate, 'staccato': staccato, 'pause': long_pause, 'wav': wav_io.getvalue(), 'dur': duration}
 
-native = get_native_baseline(target_sentence)
+# --- 2. 앱 UI 및 로직 ---
+st.title("📊 Step 1: Fluency & Rhythm Analyzer")
+target_text = "The quick brown fox jumps over the lazy dog."
 
-# --- 사이드바 ---
+# 원어민 기준점 생성
+@st.cache_resource
+def get_native(text):
+    tts = gTTS(text=text, lang='en', tld='com')
+    mp3_fp = io.BytesIO()
+    tts.write_to_fp(mp3_fp)
+    return analyze_rhythm(mp3_fp.getvalue(), is_native=True)
+
+native = get_native(target_text)
+
 with st.sidebar:
     st.header("🎧 Native Guide")
-    st.audio(native['wav_bytes'], format="audio/wav")
-    st.caption(f"Native Speed: {native['rate']:.1f} SPM") # 이제 130~150 사이가 나올 것임
-    if st.button("🔄 전체 초기화 (Reset All)"):
-        reset_app()
+    st.audio(native['wav'])
+    st.caption(f"Native Spec: {native['rate']:.1f} SPM / Duration: {native['dur']:.2f}s")
+    if st.button("🔄 Reset"): reset_app()
 
-# --- 2. 녹음 섹션 ---
-col_rec, _ = st.columns([1, 5])
-with col_rec:
-    audio_data = mic_recorder(
-        start_prompt="🔴 녹음 시작",
-        stop_prompt="⏹️ 중지 및 분석",
-        key=f"recorder_{st.session_state.widget_id}"
-    )
+audio_data = mic_recorder(start_prompt="🔴 녹음 시작", stop_prompt="⏹️ 중지 및 분석", key=f"rec_{st.session_state.widget_id}")
 
-# --- 3. 분석 프로세스 ---
 if audio_data:
-    try:
-        audio_bytes = audio_data['bytes']
-        audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
-        wav_io = io.BytesIO()
-        audio_segment.export(wav_io, format="wav")
-        wav_io.seek(0)
-        y, sr = librosa.load(wav_io, sr=None)
-
-        if np.max(np.abs(y)) < 0.05: st.stop()
-
-        # 학생 발화는 노이즈가 있을 수 있으므로 top_db=30 적용
-        y_trimmed, _ = librosa.effects.trim(y, top_db=30)
-        duration = librosa.get_duration(y=y_trimmed, sr=sr)
+    # 학생 발화 분석 (원어민과 동일한 analyze_rhythm 함수 사용)
+    res = analyze_rhythm(audio_data['bytes'])
+    
+    # 유효성 검사 (너무 조용하면 차단)
+    if res['dur'] < 0.5:
+        st.error("음성이 너무 짧거나 감지되지 않았습니다.")
+        st.stop()
         
-        rms = librosa.feature.rms(y=y_trimmed)[0]
-        rms_db = librosa.amplitude_to_db(rms, ref=np.max)
-        frame_dur = duration / len(rms)
-        is_silent = rms_db < -30 # 학생용 기준
-        
-        pauses = []
-        curr = 0
-        for s in is_silent:
-            if s: curr += frame_dur
-            else:
-                if curr > 0: pauses.append(curr)
-                curr = 0
-        
-        word_count = len(target_sentence.split())
-        st.session_state.analysis_result = {
-            'rate': ((word_count * 1.45) / duration) * 60,
-            'staccato': len([d for d in pauses if 0.05 <= d < 0.25]),
-            'pause': len([d for d in pauses if d >= 0.25])
-        }
-    except Exception as e:
-        st.error(f"분석 오류: {e}")
+    st.session_state.analysis_result = res
 
-# --- 4. 결과 출력 (도표 및 피드백) ---
+# --- 3. 결과 렌더링 ---
 if st.session_state.analysis_result:
     res = st.session_state.analysis_result
     st.divider()
     
     m1, m2, m3 = st.columns(3)
-    m1.metric("나의 속도", f"{res['rate']:.1f} SPM", delta=f"Guide: {native['rate']:.1f}")
-    m2.metric("음절 간 끊김", f"{res['staccato']} 회", delta=f"Native: {native['staccato']} 회", delta_color="inverse")
-    m3.metric("긴 멈춤", f"{res['pause']} 회", delta=f"Native: {native['pause']} 회", delta_color="inverse")
+    # 일치도 계산 (속도 기준)
+    match_score = max(0, 100 - abs(res['rate'] - native['rate']))
+    
+    m1.metric("발화 속도", f"{res['rate']:.1f} SPM", delta=f"Target: {native['rate']:.1f}")
+    m2.metric("음절 간 끊김", f"{res['staccato']} 회", delta=f"Target: {native['staccato']} 회", delta_color="inverse")
+    m3.metric("긴 멈춤", f"{res['pause']} 회", delta=f"Target: {native['pause']} 회", delta_color="inverse")
 
-    # [중요] 도표 복구
+    # 대조 그래프
     fig = go.Figure(data=[
-        go.Bar(name='Native (Guide)', x=['Speed', 'Gaps', 'Pauses'], 
-               y=[native['rate'], native['staccato'], native['pause']], marker_color='#D1D1D1'),
-        go.Bar(name='You (Student)', x=['Speed', 'Gaps', 'Pauses'], 
-               y=[res['rate'], res['staccato'], res['pause']], marker_color='#1E88E5')
+        go.Bar(name='Native', x=['Speed', 'Gaps', 'Pauses'], y=[native['rate'], native['staccato'], native['pause']], marker_color='#D1D1D1'),
+        go.Bar(name='Student', x=['Speed', 'Gaps', 'Pauses'], y=[res['rate'], res['staccato'], res['pause']], marker_color='#1E88E5')
     ])
     fig.update_layout(barmode='group', height=350)
     st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
-    # 속도 차이가 20 SPM 이내면 동일한 것으로 간주
-    if abs(res['rate'] - native['rate']) < 20 and res['staccato'] <= native['staccato'] + 1:
-        st.success("🌟 **훌륭합니다! 원어민 가이드와 일치하는 리듬을 보여주고 있습니다.**")
+    # 최종 판정
+    if match_score > 90 and res['staccato'] == native['staccato']:
+        st.success(f"🌟 **완벽합니다!** 원어민 가이드와 {match_score:.1f}% 일치하는 리듬입니다.")
+    elif match_score > 80:
+        st.info("훌륭한 리듬입니다. 원어민과 거의 유사합니다.")
     else:
-        st.info("원어민 리듬을 참고하여 연음(Linking)과 속도를 조절해 보세요.")
-    
-    if st.button("🔄 Try Again"):
-        reset_app()
+        st.warning("원어민 리듬을 다시 듣고 연음(Linking)에 신경 써보세요.")

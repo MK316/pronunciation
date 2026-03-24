@@ -44,15 +44,22 @@ if audio_data:
 
             # B. Librosa로 오디오 로드
             y, sr = librosa.load(wav_io, sr=None)
-            total_duration = librosa.get_duration(y=y, sr=sr)
 
-            # C. 유창성 지표 계산 (Pause Detection)
-            # top_db=25: 소음이 있는 환경이면 20~30 사이로 조절 가능
-            non_silent_intervals = librosa.effects.split(y, top_db=25)
+            # [추가] 양 끝 무음 제거 (Trimming)
+            # top_db=25: 25데시벨 이하를 무음으로 간주하고 앞뒤를 잘라냄
+            y_trimmed, index = librosa.effects.trim(y, top_db=25)
+            
+            # 잘라낸 후의 실제 분석 대상 시간
+            total_duration = librosa.get_duration(y=y_trimmed, sr=sr)
+
+            # C. 유창성 지표 계산 (Pause Detection) - 잘라낸 오디오(y_trimmed) 사용
+            non_silent_intervals = librosa.effects.split(y_trimmed, top_db=25)
             
             # 실제 발화 시간 합계 (초)
             actual_speech_time = sum([(end - start) / sr for start, end in non_silent_intervals])
-            pause_count = len(non_silent_intervals) - 1
+            
+            # 휴지 횟수 및 시간 (양 끝을 잘랐으므로 문장 내부의 휴지만 남음)
+            pause_count = max(0, len(non_silent_intervals) - 1)
             pause_time = max(0, total_duration - actual_speech_time)
 
             # D. 발화 속도 계산 (Syllables Per Minute)

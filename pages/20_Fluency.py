@@ -8,7 +8,7 @@ from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 
 # --- 1. 초기화 및 설정 ---
-st.set_page_config(page_title="Rhythm Analyzer v3.1", layout="wide")
+st.set_page_config(page_title="Rhythm Analyzer v3.2", layout="wide")
 
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
@@ -22,7 +22,6 @@ def reset_app():
 
 # --- [정밀 분석 엔진] ---
 def analyze_rhythm(audio_bytes, is_student=False):
-    # A. 기본 로드 및 규격화
     audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
     audio_segment = audio_segment.set_frame_rate(16000).set_channels(1)
     
@@ -32,23 +31,22 @@ def analyze_rhythm(audio_bytes, is_student=False):
     
     y, sr = librosa.load(wav_io, sr=16000)
     
-    # [강력 필터 1] 에너지 체크 (노이즈와 실제 음성 구분)
-    # 전체 음량의 RMS 평균이 일정 수준 이하면 분석 거부
+    # [강력 필터 1] 에너지 체크 (노이즈 게이트)
     rms_mean = np.sqrt(np.mean(y**2))
-    if is_student and rms_mean < 0.01: # 0.01 이하는 사실상 주변 소음
+    if is_student and rms_mean < 0.01: 
         return None
 
     y = librosa.util.normalize(y)
     
-    # [강력 필터 2] 무음 제거 후 길이 체크
+    # [강력 필터 2] 길이 체크 (트리밍 후)
     y_trim, _ = librosa.effects.trim(y, top_db=30)
     duration = librosa.get_duration(y=y_trim, sr=sr)
     
-    # 문장(9단어)을 읽는데 1.5초 미만은 물리적으로 불가능 (노이즈로 간주)
+    # 노이즈로 간주 (1.5초 미만 발화)
     if is_student and duration < 1.5: 
         return None
     
-    # B. 리듬 분석
+    # 에너지 기반 리듬 분석
     rms = librosa.feature.rms(y=y_trim)[0]
     rms_db = librosa.amplitude_to_db(rms, ref=np.max)
     frame_dur = duration / len(rms)
@@ -81,6 +79,7 @@ def get_native(text):
     tts = gTTS(text=text, lang='en', tld='com')
     mp3_fp = io.BytesIO()
     tts.write_to_fp(mp3_fp)
+    # 원어민 데이터는 필터 제외
     return analyze_rhythm(mp3_fp.getvalue(), is_student=False)
 
 native = get_native(target_text)
@@ -127,14 +126,66 @@ if st.session_state.analysis_result:
     st.audio(res['wav'], format="audio/wav")
     
     st.divider()
+    st.subheader("🎯 분석 결과 대조 (이중 축 적용)")
+    
     m1, m2, m3 = st.columns(3)
     m1.metric("발화 속도", f"{res['rate']:.1f} SPM", delta=f"Target: {native['rate']:.1f}")
     m2.metric("음절 간 끊김", f"{res['staccato']} 회", delta=f"Target: {native['staccato']} 회", delta_color="inverse")
     m3.metric("긴 멈춤", f"{res['pause']} 회", delta=f"Target: {native['pause']} 회", delta_color="inverse")
 
-    fig = go.Figure(data=[
-        go.Bar(name='Native', x=['Speed', 'Gaps', 'Pauses'], y=[native['rate'], native['staccato'], native['pause']], marker_color='#D1D1D1'),
-        go.Bar(name='You', x=['Speed', 'Gaps', 'Pauses'], y=[res['rate'], res['staccato'], res['pause']], marker_color='#1E88E5')
-    ])
-    fig.update_layout(barmode='group', height=400)
+    # --- [핵심 수정] 이중 Y축 기반 시각화 ---
+    fig = go.Figure()
+
+    # 왼쪽 Y축 (y1): 발화 속도 (SPM) 전용
+    fig.add_trace(go.Bar(
+        name='Native (Speed)',
+        x=['Speed'], 
+        y=[native['rate']], 
+        marker_color='#D1D1D1', 
+        yaxis='y1'
+    ))
+    fig.add_trace(go.Bar(
+        name='You (Speed)',
+        x=['Speed'], 
+        y=[res['rate']], 
+        marker_color='#1E88E5', 
+        yaxis='y1'
+    ))
+
+    # 오른쪽 Y축 (y2): 멈춤 횟수 (Counts) 전용
+    # Gaps와 Pauses를 나란히 배치하기 위해 Grouped Bar 설정
+    x_counts = ['Gaps (Staccato)', 'Pauses (Long)']
+    fig.add_trace(go.Bar(
+        name='Native (Counts)',
+        x=x_counts, 
+        y=[native['staccato'], native['pause']], 
+        marker_color='#9E9E9E', # 조금 더 진한 회색 
+        yaxis='y2'
+    ))
+    fig.add_trace(go.Bar(
+        name='You (Counts)',
+        x=x_counts, 
+        y=[res['staccato'], res['pause']], 
+        marker_color='#D32F2F', # 빨간색으로 시인성 확보
+        yaxis='y2'
+    ))
+
+    # 레이아웃 설정: 이중 축 정의
+    fig.update_layout(
+        height=450,
+        barmode='group', # 막대를 카테고리별로 그룹화
+        xaxis=dict(title_text='Rhythm Metrics'),
+        yaxis=dict(
+            title=dict(text='Speech Rate (SPM)', font=dict(color='#1E88E5')),
+            tickfont=dict(color='#1E88E5')
+        ),
+        yaxis2=dict(
+            title=dict(text='Pause Counts', font=dict(color='#D32F2F')),
+            tickfont=dict(color='#D32F2F'),
+            overlaying='y', # y축 위에 겹쳐서 표시
+            side='right' # 오른쪽에 배치
+        ),
+        legend=dict(x=1.1, y=1) # 범례를 약간 밖으로 이동
+    )
+    
     st.plotly_chart(fig, use_container_width=True)

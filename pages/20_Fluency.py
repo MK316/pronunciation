@@ -3,7 +3,7 @@ import librosa
 import numpy as np
 import io
 import plotly.graph_objects as go
-from pydub import AudioSegment, AudioOps
+from pydub import AudioSegment
 from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 

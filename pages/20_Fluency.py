@@ -9,10 +9,16 @@ from streamlit_mic_recorder import mic_recorder
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="Step 1: Fluency Analyzer", layout="wide")
 
+# 세션 상태 초기화 함수
+def reset_analysis():
+    for key in st.session_state.keys():
+        if 'recorder' in key:
+            del st.session_state[key]
+    st.rerun()
+
 st.title("📊 Step 1: Fluency & Rhythm Analyzer")
 st.markdown("""
 이 단계에서는 여러분의 **발화 속도(Speech Rate)**와 **유의미한 휴지(Pause)** 패턴을 분석합니다. 
-단어 사이의 미세한 끊김이 아닌, 실제 '멈춤'을 측정합니다.
 """)
 
 # 분석 대상 예시 문장
@@ -20,7 +26,7 @@ target_sentence = "The quick brown fox jumps over the lazy dog."
 st.info(f"**Read this:** {target_sentence}")
 
 # --- 2. 음성 녹음 섹션 ---
-col_rec, col_empty = st.columns([1, 2])
+col_rec, col_reset = st.columns([1, 5])
 with col_rec:
     audio_data = mic_recorder(
         start_prompt="🔴 Start Recording",
@@ -28,7 +34,13 @@ with col_rec:
         key='fluency_recorder'
     )
 
-# --- 3. 오디오 분석 로직 ---
+with col_reset:
+    if audio_data:
+        # 다시 시도 버튼: 클릭 시 모든 데이터 초기화 후 새로고침
+        if st.button("🔄 Try Again"):
+            reset_analysis()
+
+# --- 3. 오디오 분석 및 결과 출력 ---
 if audio_data:
     try:
         with st.spinner("Analyzing your fluency..."):
@@ -41,15 +53,11 @@ if audio_data:
 
             # B. Librosa로 로드 및 양 끝 무음 제거 (Trimming)
             y, sr = librosa.load(wav_io, sr=None)
-            # top_db=30: 30데시벨 이하를 무음으로 간주하고 앞뒤 공백 제거
-            y_trimmed, index = librosa.effects.trim(y, top_db=30)
+            y_trimmed, _ = librosa.effects.trim(y, top_db=30)
             total_duration = librosa.get_duration(y=y_trimmed, sr=sr)
 
-            # C. 유의미한 멈춤(Pause) 필터링 로직
-            # 30dB 이하 구간을 나누되, 아주 짧은 구간은 무시함
+            # C. 유의미한 멈춤(Pause) 필터링 (0.3초 기준)
             intervals = librosa.effects.split(y_trimmed, top_db=30)
-            
-            # 언어학적 기준: 0.3초(300ms) 이상의 공백만 실제 Pause로 인정
             min_pause_duration = 0.3 
             valid_pauses = []
             total_pause_time = 0
@@ -58,7 +66,6 @@ if audio_data:
                 pause_start = intervals[i][1] / sr
                 pause_end = intervals[i+1][0] / sr
                 pause_dur = pause_end - pause_start
-                
                 if pause_dur >= min_pause_duration:
                     valid_pauses.append((pause_start, pause_end))
                     total_pause_time += pause_dur
@@ -66,34 +73,32 @@ if audio_data:
             pause_count = len(valid_pauses)
             actual_speech_time = max(0.1, total_duration - total_pause_time)
 
-            # D. 발화 속도 계산 (Syllables Per Minute)
+            # D. 발화 속도 계산
             word_count = len(target_sentence.split())
-            estimated_syllables = word_count * 1.3 # 영어 평균 음절 가중치
-            speech_rate = (estimated_syllables / total_duration) * 60  # SPM
+            estimated_syllables = word_count * 1.3 
+            speech_rate = (estimated_syllables / total_duration) * 60  
 
-        # --- 4. 시각화 결과 출력 ---
+        # --- 4. 시각화 결과 출력 (데이터가 있을 때만 표시) ---
         st.divider()
         m_col1, m_col2, m_col3 = st.columns(3)
         
         with m_col1:
             st.metric("Speech Rate", f"{speech_rate:.1f} SPM")
-            st.caption("원어민 평균: 130~150 SPM")
+            st.caption("Native Speaker: 130~150 SPM")
             
         with m_col2:
             st.metric("Significant Pauses", f"{pause_count} times")
-            st.caption(f"{min_pause_duration}초 이상의 멈춤만 카운트됨")
+            st.caption(f"Paused for more than {min_pause_duration}s")
 
         with m_col3:
             st.metric("Speaking Ratio", f"{(actual_speech_time/total_duration)*100:.1f} %")
-            st.caption("순수 발화 시간 비중")
+            st.caption("Pure Speaking Time Ratio")
 
-        # 결과 시각화
         c1, c2 = st.columns([2, 1])
-        
         with c1:
             st.subheader("⏱️ Speech vs Pause Distribution")
             fig_pie = go.Figure(data=[go.Pie(
-                labels=['Actual Speaking', 'Long Pauses'], 
+                labels=['Speaking', 'Long Pauses'], 
                 values=[actual_speech_time, total_pause_time],
                 hole=.4,
                 marker_colors=['#2E7D32', '#FFA000']
@@ -101,18 +106,16 @@ if audio_data:
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with c2:
-            st.subheader("💡 Analysis Feedback")
+            st.subheader("💡 Feedback")
             if speech_rate < 100:
-                st.warning("문장을 읽는 속도가 다소 느립니다. 단어들을 좀 더 매끄럽게 연결해 보세요.")
+                st.warning("발화 속도가 느립니다. Linking(연음)에 신경 써보세요.")
             elif pause_count > 2:
-                st.error(f"문장 내에서 {pause_count}번의 뚜렷한 멈춤이 감지되었습니다. 의미 단위로 호흡을 조절해 보세요.")
+                st.error(f"{pause_count}번의 유의미한 멈춤이 감지되었습니다.")
             else:
-                st.success("훌륭합니다! 불필요한 멈춤 없이 유창하게 발화하셨습니다.")
+                st.success("훌륭합니다! 리듬감이 매우 좋습니다.")
 
     except Exception as e:
-        st.error(f"분석 중 오류 발생: {e}")
-        st.info("녹음 데이터가 너무 짧거나 환경음에 문제가 있을 수 있습니다.")
-
+        st.error(f"Error: {e}")
 else:
     st.write("---")
-    st.info("녹음 버튼을 누르고 문장을 읽어주세요. 분석 결과가 여기에 표시됩니다.")
+    st.info("좌측 상단의 버튼을 눌러 녹음을 시작하세요.")

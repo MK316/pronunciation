@@ -58,7 +58,7 @@ if audio_data:
 
             # C. 유의미한 멈춤(Pause) 필터링 (0.3초 기준)
             intervals = librosa.effects.split(y_trimmed, top_db=30)
-            min_pause_duration = 0.3 
+            min_pause_duration = 0.2 
             valid_pauses = []
             total_pause_time = 0
             

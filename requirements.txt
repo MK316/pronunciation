@@ -1,7 +1,7 @@
 streamlit
 streamlit-mic-recorder
 librosa
-numpy
+numpy<2.0.0
 plotly
-parselmouth-python
+praat-parselmouth
 soundfile

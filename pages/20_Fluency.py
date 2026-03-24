@@ -5,41 +5,111 @@ import io
 import plotly.graph_objects as go
 from pydub import AudioSegment
 from streamlit_mic_recorder import mic_recorder
+from gtts import gTTS
 
 # --- 1. 페이지 설정 및 상태 초기화 ---
-st.set_page_config(page_title="Step 1: Rhythm Analyzer", layout="wide")
+st.set_page_config(page_title="Step 1: Native Baseline Analyzer", layout="wide")
 
-# 리셋 로직: 모든 녹음 관련 상태를 완전히 비움
+# 사이드바 리셋 버튼: 모든 데이터를 지우고 처음 상태로 돌아감
 if st.sidebar.button("🔄 전체 초기화 (Reset All)"):
     for key in st.session_state.keys():
         del st.session_state[key]
     st.rerun()
 
-st.title("📊 Step 1: Fluency & Rhythm Analyzer")
-st.markdown("음절 간의 연결성과 문장의 흐름을 분석하여 자연스러운 발화를 돕습니다.")
+st.title("📊 Step 1: Native Baseline & Rhythm Analyzer")
+st.markdown("원어민의 발화 리듬을 기준으로 여러분의 **연결성**과 **속도**를 정밀 분석합니다.")
 
 target_sentence = "The quick brown fox jumps over the lazy dog."
 st.info(f"**Read this:** {target_sentence}")
 
-# --- 2. 녹음 섹션 ---
-# key에 session_state를 연동하여 리셋 시 버튼도 초기화되도록 유도
-audio_data = mic_recorder(
-    start_prompt="🔴 Start Recording",
-    stop_prompt="⏹️ Stop & Analyze",
-    key='rhythm_recorder_v3'
-)
+# --- [핵심] 원어민 기준점(Baseline) 생성 및 분석 함수 ---
+@st.cache_resource # 앱 실행 시 한 번만 실행되도록 캐싱
+def get_native_baseline(text):
+    with st.spinner("원어민 기준점 생성 및 분석 중..."):
+        # A. gTTS로 오디오 생성
+        tts = gTTS(text=text, lang='en', tld='com') # 미국 영어 기준
+        mp3_fp = io.BytesIO()
+        tts.write_to_fp(mp3_fp)
+        mp3_fp.seek(0)
+        
+        # B. Librosa 분석을 위해 WAV로 변환
+        audio_segment = AudioSegment.from_file(mp3_fp, format="mp3")
+        wav_io = io.BytesIO()
+        audio_segment.export(wav_io, format="wav")
+        wav_io.seek(0)
+        
+        # C. 리듬 분석 (학생 분석 로직과 동일 적용)
+        y, sr = librosa.load(wav_io, sr=None)
+        y_trimmed, _ = librosa.effects.trim(y, top_db=25)
+        duration = librosa.get_duration(y=y_trimmed, sr=sr)
+        
+        rms = librosa.feature.rms(y=y_trimmed)[0]
+        rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+        frame_dur = duration / len(rms)
+        threshold = -25 # 음절 간 끊김 타겟 까다로운 기준
+        is_silent = rms_db < threshold
+        
+        silent_durations = []
+        current_pause = 0
+        for silent in is_silent:
+            if silent: current_pause += frame_dur
+            else:
+                if current_pause > 0: silent_durations.append(current_pause)
+                current_pause = 0
+        
+        short_gaps = [d for d in silent_durations if 0.05 <= d < 0.25]
+        long_pauses = [d for d in silent_durations if d >= 0.25]
+        
+        word_count = len(text.split())
+        baseline = {
+            'y_trimmed': y_trimmed,
+            'sr': sr,
+            'duration': duration,
+            'speech_rate': ((word_count * 1.3) / duration) * 60, # SPM 추정
+            'staccato_count': len(short_gaps),
+            'pause_count': len(long_pauses)
+        }
+        return baseline
 
-# --- 3. 분석 및 결과 출력 ---
+# 앱 실행 시 원어민 베이스라인 자동 생성
+if 'native_baseline' not in st.session_state:
+    st.session_state.native_baseline = get_native_baseline(target_sentence)
+
+# 사이드바에 원어민 발음 들어보기 추가
+with st.sidebar:
+    st.subheader("🎧 원어민 발음 듣기")
+    # 캐싱된 오디오 데이터를 플레이어로 재생
+    audio_segment_export = AudioSegment.from_mono_audiosegments(
+        AudioSegment(
+            st.session_state.native_baseline['y_trimmed'].tobytes(), 
+            frame_rate=st.session_state.native_baseline['sr'],
+            sample_width=st.session_state.native_baseline['y_trimmed'].dtype.itemsize, 
+            channels=1
+        )
+    )
+    play_io = io.BytesIO()
+    audio_segment_export.export(play_io, format="wav")
+    st.audio(play_io)
+
+# --- 2. 학생 녹음 섹션 ---
+col_rec, _ = st.columns([1, 5])
+with col_rec:
+    # key에 session_state를 연동하여 리셋 시 버튼도 초기화
+    audio_data = mic_recorder(
+        start_prompt="🔴 Start Recording",
+        stop_prompt="⏹️ Stop & Analyze",
+        key='rhythm_recorder_baseline_v1'
+    )
+
+# --- 3. 분석 및 대조 결과 출력 ---
 if audio_data:
     try:
-        with st.spinner("발화 리듬 분석 중..."):
+        with st.spinner("여러분의 발화 리듬 분석 중..."):
             audio_bytes = audio_data['bytes']
             
             # 유효성 검사 (너무 짧은 소음 방지)
             if len(audio_bytes) < 2000:
                 st.warning("녹음 시간이 너무 짧습니다. 문장 전체를 다시 읽어주세요.")
-                if st.button("다시 시도"):
-                    st.rerun()
                 st.stop()
 
             # 오디오 로드 및 변환
@@ -59,7 +129,7 @@ if audio_data:
             rms_db = librosa.amplitude_to_db(rms, ref=np.max)
             frame_dur = total_duration / len(rms)
 
-            # 임계값 설정 (에너지가 뚝 떨어지는 지점 탐색)
+            # 임계값 설정
             threshold = -25 
             is_silent = rms_db < threshold
             
@@ -71,58 +141,92 @@ if audio_data:
                     if current_pause > 0: silent_durations.append(current_pause)
                     current_pause = 0
 
-            # 지표 분류: 0.05~0.25초(음절 간 끊김), 0.25초 이상(긴 멈춤)
-            short_gaps = [d for d in silent_durations if 0.05 <= d < 0.25]
-            long_pauses = [d for d in silent_durations if d >= 0.25]
+            # 지표 분류: 학생 데이터
+            student_short_gaps = [d for d in silent_durations if 0.05 <= d < 0.25]
+            student_long_pauses = [d for d in silent_durations if d >= 0.25]
 
-            staccato_count = len(short_gaps)
-            pause_count = len(long_pauses)
-            total_pause_time = sum(short_gaps) + sum(long_pauses)
-            actual_speech_time = max(0.1, total_duration - total_pause_time)
-            phonation_ratio = (actual_speech_time / total_duration) * 100
-
+            student_staccato_count = len(student_short_gaps)
+            student_pause_count = len(student_long_pauses)
+            
             # 발화 속도 (SPM)
             word_count = len(target_sentence.split())
-            speech_rate = ((word_count * 1.3) / total_duration) * 60
+            student_speech_rate = ((word_count * 1.3) / total_duration) * 60
 
-        # --- 4. 결과 대시보드 ---
+        # --- 4. [핵심] 원어민 대조 결과 대시보드 ---
         st.divider()
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("발화 속도", f"{speech_rate:.1f} SPM")
-        m2.metric("긴 멈춤", f"{pause_count} 회")
-        m3.metric("음절 간 끊김", f"{staccato_count} 회", delta=f"{staccato_count}회 감지", delta_color="inverse")
-        m4.metric("발화 밀도", f"{phonation_ratio:.1f} %")
+        st.subheader("🎯 원어민 대조 분석 결과")
+        
+        # 원어민 데이터 가져오기
+        native = st.session_state.native_baseline
+        
+        m1, m2, m3 = st.columns(3)
+        
+        with m1:
+            # 발화 속도 대조 (델타 값 표기)
+            rate_delta = student_speech_rate - native['speech_rate']
+            st.metric(
+                label="발화 속도 (Native vs You)", 
+                value=f"{student_speech_rate:.1f} SPM", 
+                delta=f"{rate_delta:.1f} SPM (Target: {native['speech_rate']:.1f})",
+                delta_color="normal" if rate_delta > -20 else "inverse" # 원어민보다 너무 느리면 빨간색
+            )
+            st.caption("Native Speaker: 130~150 SPM")
+            
+        with m2:
+            # 음절 간 끊김 대조 (델타 값 표기 - 낮을수록 좋음)
+            gap_delta = student_staccato_count - native['staccato_count']
+            st.metric(
+                label="음절 간 끊김 (Native vs You)", 
+                value=f"{student_staccato_count} 회", 
+                delta=f"{gap_delta} 회 (Target: {native['staccato_count']} 회)",
+                delta_color="inverse" # 높을수록 나쁨 (빨간색)
+            )
+            st.caption(f"단어 사이 미세 단절 (0.05s~0.25s)")
 
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.subheader("⏱️ 시간 분포 (Speech vs Pause)")
-            fig = go.Figure(data=[go.Pie(
-                labels=['Speaking', 'Long Pause', 'Syllable Gap'], 
-                values=[actual_speech_time, sum(long_pauses), sum(short_gaps)],
-                hole=.4, marker_colors=['#2E7D32', '#FFA000', '#D32F2F']
-            )])
-            st.plotly_chart(fig, use_container_width=True)
+        with m3:
+            # 긴 멈춤 대조
+            pause_delta = student_pause_count - native['pause_count']
+            st.metric(
+                label="긴 멈춤 (Native vs You)", 
+                value=f"{student_pause_count} 회", 
+                delta=f"{pause_delta} 회 (Target: {native['pause_count']} 회)",
+                delta_color="inverse" # 높을수록 나쁨 (빨간색)
+            )
+            st.caption("0.25초 이상 멈춤")
 
-        with c2:
-            st.subheader("💡 분석 피드백")
-            if staccato_count >= (word_count * 0.4):
-                st.error("🚩 **음절마다 끊어 읽기가 많아 보입니다.**")
-                st.write("단어들을 하나씩 떼어서 읽기보다는, 소리를 다음 단어까지 부드럽게 밀어내는 **연음(Linking)** 연습을 해보세요. 한 호흡에 문장 끝까지 간다는 느낌이 중요합니다.")
-            elif pause_count > 2:
-                st.warning("문장 중간에 호흡이 자주 끊깁니다. 의미 단위(Chunk)로 묶어서 읽어보세요.")
-            elif speech_rate < 100:
-                st.info("전반적인 속도가 다소 느립니다. 조금 더 자신감 있게 읽어보세요.")
-            else:
-                st.success("단어 간 연결이 매끄럽고 리듬감이 아주 좋습니다!")
+        # 시각화: 대조 바 차트
+        st.write("---")
+        st.subheader("📊 리듬 지표 대조 그래프")
+        categories = ['Speech Rate', 'Syllable Gaps', 'Long Pauses']
+        
+        fig = go.Figure(data=[
+            go.Bar(name='Native Speaker', x=categories, y=[native['speech_rate'], native['staccato_count'], native['pause_count']], marker_color='#E0E0E0'),
+            go.Bar(name='You', x=categories, y=[student_speech_rate, student_staccato_count, student_pause_count], marker_color='#2E7D32')
+        ])
+        # 차트 레이아웃 조정
+        fig.update_layout(barmode='group', height=400)
+        # 발화 속도는 숫자가 커야 좋고, Gaps/Pauses는 작아야 좋으므로 Y축을 이중으로 쓰거나 단위를 잘 맞추는게 좋지만, 여기선 직관적으로 group bar로 표시
+        st.plotly_chart(fig, use_container_width=True)
 
-        # 하단에 '다시 시도' 버튼 배치 (스크롤 배려)
+        # --- 5. 분석 피드백 (수정) ---
+        st.divider()
+        st.subheader("💡 Expert Feedback")
+        if student_staccato_count >= (word_count * 0.4):
+            st.error("🚩 **음절마다 끊어 읽기가 많아 보입니다.**")
+            st.write(f"원어민은 단어 사이를 미세하게 {native['staccato_count']}번만 끊었지만, 여러분은 {student_staccato_count}번 끊었습니다. 소리를 다음 단어까지 부드럽게 밀어내는 **연음(Linking)** 연습을 해보세요. 한 호흡에 문장 끝까지 간다는 느낌이 중요합니다.")
+        elif student_pause_count > (native['pause_count'] + 1):
+            st.warning("문장 중간에 호흡이 자주 끊깁니다. 의미 단위(Chunk)로 묶어서 읽어보세요.")
+        elif student_speech_rate < (native['speech_rate'] - 30):
+            st.info(f"원어민보다 발화 속도가 상당히 느립니다 ({native['speech_rate']:.1f} vs {student_speech_rate:.1f} SPM). 조금 더 자신감 있게 속도를 높여보세요.")
+        else:
+            st.success("단어 간 연결이 매끄럽고 리듬감이 원어민과 매우 흡사합니다! 훌륭합니다.")
+
+        # 하단 리셋 버튼
         if st.button("🔄 다시 시도하기 (Reset Analysis)"):
             reset_all()
 
     except Exception as e:
-        st.error(f"분석 중 오류가 발생했습니다. 다시 녹음해 주세요.")
-        if st.button("오류 해결 후 다시 시도"):
-            reset_all()
+        st.error(f"분석 중 오류가 발생했습니다. 다시 녹음해 주세요. 오류 내용: {e}")
 
 else:
     st.write("---")

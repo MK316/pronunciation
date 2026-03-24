@@ -47,7 +47,7 @@ if audio_data:
 
             # [추가] 양 끝 무음 제거 (Trimming)
             # top_db=25: 25데시벨 이하를 무음으로 간주하고 앞뒤를 잘라냄
-            y_trimmed, index = librosa.effects.trim(y, top_db=25)
+            y_trimmed, index = librosa.effects.trim(y, top_db=35)
             
             # 잘라낸 후의 실제 분석 대상 시간
             total_duration = librosa.get_duration(y=y_trimmed, sr=sr)

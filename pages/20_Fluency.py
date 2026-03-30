@@ -27,7 +27,7 @@ if "current_idx" not in st.session_state:
 
 
 # --------------------------------------------------
-# 2. Practice materials by level
+# 2. Practice materials
 # --------------------------------------------------
 LEVELS = {
     "Level 1": {
@@ -35,7 +35,7 @@ LEVELS = {
         "target_sps": (2.8, 4.5),
         "sentences": [
             {"text": "I go to school every morning.", "syllables": 9},
-            {"text": "She likes reading books at home.", "syllables": 8},
+            {"text": "She likes reading books at home.", "syllables": 7},
             {"text": "We study English after lunch.", "syllables": 8},
         ],
     },
@@ -44,7 +44,7 @@ LEVELS = {
         "target_sps": (3.2, 5.0),
         "sentences": [
             {"text": "My teacher gave us a short speaking task today.", "syllables": 11},
-            {"text": "I usually practice English with my friends online.", "syllables": 12},
+            {"text": "I usually practice English with my friends online.", "syllables": 13},
             {"text": "The class started late because of the heavy rain.", "syllables": 11},
         ],
     },
@@ -52,9 +52,9 @@ LEVELS = {
         "label": "Advanced",
         "target_sps": (3.5, 5.5),
         "sentences": [
-            {"text": "Many students feel more confident after regular speaking practice.", "syllables": 16},
+            {"text": "Many students feel more confident after regular speaking practice.", "syllables": 17},
             {"text": "Learning a language takes time, patience, and daily effort.", "syllables": 16},
-            {"text": "Clear pronunciation helps listeners understand the message better.", "syllables": 16},
+            {"text": "Clear pronunciation helps listeners understand the message better.", "syllables": 17},
         ],
     },
 }
@@ -84,31 +84,28 @@ def convert_to_wav(audio_bytes):
     wav_io.seek(0)
     return wav_io
 
+
 def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=False):
     try:
         wav_io = convert_to_wav(audio_bytes)
         y, sr = librosa.load(wav_io, sr=16000)
 
-        # Full recorded duration
         total_duration = librosa.get_duration(y=y, sr=sr)
 
-        # Very low-energy rejection
         rms_mean = np.sqrt(np.mean(y**2))
         if is_student and rms_mean < 0.005:
             return None
 
-        # --------------------------------------------------
-        # 1. Detect speech intervals more conservatively
-        # --------------------------------------------------
+        # Speech interval detection without normalization
         intervals = librosa.effects.split(
             y,
-            top_db=20,          # stricter than 30
+            top_db=20,
             frame_length=2048,
             hop_length=256
         )
 
-        # Remove tiny intervals that are likely noise bursts
-        min_seg_dur = 0.12  # seconds
+        # Remove tiny intervals likely to be noise
+        min_seg_dur = 0.12
         filtered = []
         for start, end in intervals:
             seg_dur = (end - start) / sr
@@ -118,9 +115,9 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         if len(filtered) == 0:
             return None
 
-        # Merge intervals separated by very short gaps
+        # Merge close intervals
         merged = [filtered[0]]
-        merge_gap = 0.18 * sr  # 180 ms
+        merge_gap = int(0.18 * sr)
         for start, end in filtered[1:]:
             prev_start, prev_end = merged[-1]
             if start - prev_end <= merge_gap:
@@ -128,8 +125,6 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
             else:
                 merged.append([start, end])
 
-        # Utterance duration:
-        # from first detected speech to last detected speech
         speech_start = merged[0][0]
         speech_end = merged[-1][1]
 
@@ -139,9 +134,7 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         if is_student and utterance_duration < 1.0:
             return None
 
-        # --------------------------------------------------
-        # 2. Pause analysis inside the utterance window
-        # --------------------------------------------------
+        # Pause analysis inside utterance window
         rms = librosa.feature.rms(y=y_utt, frame_length=2048, hop_length=256)[0]
         rms_db = librosa.amplitude_to_db(rms, ref=np.max)
 
@@ -163,27 +156,20 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         short_breaks = len([d for d in pauses if 0.05 <= d < 0.25])
         long_pauses = len([d for d in pauses if d >= 0.25])
 
-        # --------------------------------------------------
-        # 3. SPS / SPM
-        # --------------------------------------------------
         sps = syllable_count / utterance_duration if utterance_duration > 0 else 0
         rate_spm = sps * 60
 
         low, high = target_sps_range
 
-        # Speed score
         if low <= sps <= high:
             speed_score = 60
         else:
             dist = min(abs(sps - low), abs(sps - high))
             speed_score = max(20, 60 - (dist * 20))
 
-        # Connectivity score
         conn_score = max(0, 40 - (short_breaks * 5) - (long_pauses * 10))
-
         total_score = int(round(speed_score + conn_score))
 
-        # Extra transparency values
         speech_only_duration = sum((end - start) / sr for start, end in merged)
         leading_silence = speech_start / sr
         trailing_silence = total_duration - (speech_end / sr)
@@ -203,6 +189,10 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
             "syllable_count": syllable_count,
             "pause_list": pauses,
             "speech_intervals": [(s / sr, e / sr) for s, e in merged],
+            "speech_start": speech_start / sr,
+            "speech_end": speech_end / sr,
+            "wave_y": y,
+            "wave_sr": sr,
         }
 
     except Exception:
@@ -264,6 +254,64 @@ def overall_feedback(avg_score, avg_sps, avg_short_breaks, avg_long_pauses, targ
         return "You need more practice to build stable fluency. Focus on a steady pace and fewer pauses."
 
 
+def plot_waveform_with_marks(res):
+    y = res["wave_y"]
+    sr = res["wave_sr"]
+    total_duration = res["total_duration"]
+    speech_start = res["speech_start"]
+    speech_end = res["speech_end"]
+    speech_intervals = res["speech_intervals"]
+
+    times = np.linspace(0, total_duration, num=len(y))
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=times,
+            y=y,
+            mode="lines",
+            name="Waveform",
+            line=dict(width=1),
+        )
+    )
+
+    # Highlight analyzed speaking window
+    fig.add_vrect(
+        x0=speech_start,
+        x1=speech_end,
+        fillcolor="lightcoral",
+        opacity=0.25,
+        line_width=0,
+        annotation_text="Analyzed speaking duration",
+        annotation_position="top left",
+    )
+
+    # Mark each detected speech interval
+    for i, (s, e) in enumerate(speech_intervals):
+        fig.add_vrect(
+            x0=s,
+            x1=e,
+            fillcolor="lightgreen",
+            opacity=0.20,
+            line_width=0,
+        )
+
+    fig.add_vline(x=speech_start, line_dash="dash")
+    fig.add_vline(x=speech_end, line_dash="dash")
+
+    fig.update_layout(
+        title="Recorded waveform with analyzed speaking region",
+        xaxis_title="Time (seconds)",
+        yaxis_title="Amplitude",
+        height=350,
+        showlegend=False,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
+
+    return fig
+
+
 # --------------------------------------------------
 # 4. UI
 # --------------------------------------------------
@@ -310,7 +358,7 @@ with st.expander("🎧 Listen to the model sentence", expanded=True):
         st.audio(native["wav"], format="audio/wav")
         st.caption(
             f"Model SPS: {native['sps']:.2f} | "
-            f"Analyzed speaking duration: {native['utterance_duration']:.2f} sec"
+            f"Utterance window: {native['utterance_duration']:.2f} sec"
         )
 
 st.divider()
@@ -372,13 +420,24 @@ if trial_num in level_results:
 
     m4, m5, m6 = st.columns(3)
     m4.metric("Recorded duration", f"{res['total_duration']:.2f} sec")
-    m5.metric("Analyzed speaking duration", f"{res['utterance_duration']:.2f} sec")
-    m6.metric("Preset syllable count", f"{res['syllable_count']}")
+    m5.metric("Utterance window", f"{res['utterance_duration']:.2f} sec")
+    m6.metric("Speech-only duration", f"{res['speech_only_duration']:.2f} sec")
+
+    m7, m8, m9 = st.columns(3)
+    m7.metric("Leading silence", f"{res['leading_silence']:.2f} sec")
+    m8.metric("Trailing silence", f"{res['trailing_silence']:.2f} sec")
+    m9.metric("Preset syllable count", f"{res['syllable_count']}")
 
     st.caption(
-        f"SPS = preset syllable count / analyzed speaking duration = "
+        f"SPS = preset syllable count / utterance window = "
         f"{res['syllable_count']} / {res['utterance_duration']:.2f} = {res['sps']:.2f}"
     )
+
+    st.plotly_chart(plot_waveform_with_marks(res), use_container_width=True)
+
+    with st.expander("Detected speech intervals"):
+        for idx, (s, e) in enumerate(res["speech_intervals"], start=1):
+            st.write(f"{idx}. {s:.2f} sec ~ {e:.2f} sec")
 
     st.write("**Feedback**")
     st.info(trial_feedback(res, target_sps_range))
@@ -412,6 +471,7 @@ if len(level_results) == 3:
     avg_long_pauses = float(np.mean([r["long_pauses"] for r in ordered_results]))
     avg_total_duration = float(np.mean([r["total_duration"] for r in ordered_results]))
     avg_utterance_duration = float(np.mean([r["utterance_duration"] for r in ordered_results]))
+    avg_speech_only_duration = float(np.mean([r["speech_only_duration"] for r in ordered_results]))
     avg_syllables = float(np.mean([r["syllable_count"] for r in ordered_results]))
 
     final_color = "green" if avg_score >= 80 else "orange" if avg_score >= 60 else "red"
@@ -426,8 +486,10 @@ if len(level_results) == 3:
 
     c4, c5, c6 = st.columns(3)
     c4.metric("Avg recorded duration", f"{avg_total_duration:.2f} sec")
-    c5.metric("Avg analyzed speaking duration", f"{avg_utterance_duration:.2f} sec")
-    c6.metric("Avg preset syllable count", f"{avg_syllables:.1f}")
+    c5.metric("Avg utterance window", f"{avg_utterance_duration:.2f} sec")
+    c6.metric("Avg speech-only duration", f"{avg_speech_only_duration:.2f} sec")
+
+    st.caption(f"Average preset syllable count: {avg_syllables:.1f}")
 
     fig = go.Figure()
     fig.add_trace(
@@ -458,7 +520,8 @@ if len(level_results) == 3:
 - Score: {r['score']}
 - SPS: {r['sps']:.2f}
 - Recorded duration: {r['total_duration']:.2f} sec
-- Analyzed speaking duration: {r['utterance_duration']:.2f} sec
+- Utterance window: {r['utterance_duration']:.2f} sec
+- Speech-only duration: {r['speech_only_duration']:.2f} sec
 - Preset syllable count: {r['syllable_count']}
 - Short breaks: {r['short_breaks']}
 - Long pauses: {r['long_pauses']}

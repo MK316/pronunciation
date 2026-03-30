@@ -90,23 +90,28 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         wav_io = convert_to_wav(audio_bytes)
         y, sr = librosa.load(wav_io, sr=16000)
 
+        # Full recorded duration before trimming
+        total_duration = librosa.get_duration(y=y, sr=sr)
+
         # Basic silence / noise guard
         rms_mean = np.sqrt(np.mean(y**2))
         if is_student and rms_mean < 0.01:
             return None
 
         y = librosa.util.normalize(y)
-        y_trim, _ = librosa.effects.trim(y, top_db=30)
-        duration = librosa.get_duration(y=y_trim, sr=sr)
 
-        if is_student and duration < 1.2:
+        # Trim leading/trailing silence
+        y_trim, _ = librosa.effects.trim(y, top_db=30)
+        utterance_duration = librosa.get_duration(y=y_trim, sr=sr)
+
+        if is_student and utterance_duration < 1.2:
             return None
 
         # RMS-based pause estimate
         rms = librosa.feature.rms(y=y_trim)[0]
         rms_db = librosa.amplitude_to_db(rms, ref=np.max)
 
-        frame_dur = duration / len(rms) if len(rms) > 0 else 0
+        frame_dur = utterance_duration / len(rms) if len(rms) > 0 else 0
         is_silent = rms_db < -30
 
         pauses = []
@@ -121,14 +126,13 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         if curr > 0:
             pauses.append(curr)
 
-        staccato = len([d for d in pauses if 0.05 <= d < 0.25])
-        long_pause = len([d for d in pauses if d >= 0.25])
+        short_breaks = len([d for d in pauses if 0.05 <= d < 0.25])
+        long_pauses = len([d for d in pauses if d >= 0.25])
 
-        # SPS / SPM
-        sps = syllable_count / duration if duration > 0 else 0
+        # SPS / SPM based on trimmed utterance duration
+        sps = syllable_count / utterance_duration if utterance_duration > 0 else 0
         rate_spm = sps * 60
 
-        # Scoring
         low, high = target_sps_range
 
         # Speed score (60)
@@ -139,23 +143,25 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
             speed_score = max(20, 60 - (dist * 20))
 
         # Connectivity score (40)
-        conn_score = max(0, 40 - (staccato * 5) - (long_pause * 10))
+        conn_score = max(0, 40 - (short_breaks * 5) - (long_pauses * 10))
 
         total_score = int(round(speed_score + conn_score))
 
         return {
             "rate": rate_spm,
             "sps": sps,
-            "staccato": staccato,
-            "pause": long_pause,
+            "short_breaks": short_breaks,
+            "long_pauses": long_pauses,
             "score": total_score,
             "wav": wav_io.getvalue(),
-            "dur": duration,
+            "total_duration": total_duration,
+            "utterance_duration": utterance_duration,
+            "syllable_count": syllable_count,
+            "pause_list": pauses,
         }
 
     except Exception:
         return None
-
 
 @st.cache_resource
 def get_native_audio_and_analysis(text, syllable_count, target_sps_range):

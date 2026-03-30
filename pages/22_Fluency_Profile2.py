@@ -198,14 +198,16 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         if is_student and rms_mean < 0.005:
             return None
 
+        # Slightly less harsh speech detection
         intervals = librosa.effects.split(
             y,
-            top_db=20,
+            top_db=24,
             frame_length=2048,
             hop_length=256
         )
 
-        min_seg_dur = 0.12
+        # Keep shorter speech chunks than before
+        min_seg_dur = 0.08
         filtered = []
         for start, end in intervals:
             seg_dur = (end - start) / sr
@@ -215,14 +217,23 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         if len(filtered) == 0:
             return None
 
+        # Merge nearby chunks more generously
         merged = [filtered[0]]
-        merge_gap = int(0.18 * sr)
+        merge_gap = int(0.25 * sr)
         for start, end in filtered[1:]:
             prev_start, prev_end = merged[-1]
             if start - prev_end <= merge_gap:
                 merged[-1][1] = end
             else:
                 merged.append([start, end])
+
+        # If the last chunk is very near the previous one, attach it
+        # This helps recover weak utterance endings
+        if len(merged) >= 2:
+            last_gap = merged[-1][0] - merged[-2][1]
+            if last_gap <= int(0.35 * sr):
+                merged[-2][1] = merged[-1][1]
+                merged = merged[:-1]
 
         speech_start = merged[0][0]
         speech_end = merged[-1][1]
@@ -237,12 +248,12 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         pause_time = max(0.0, utterance_duration - speech_only_duration)
         pause_ratio = pause_time / utterance_duration if utterance_duration > 0 else 0.0
 
-        # pause analysis inside utterance window
+        # Pause analysis inside utterance window
         rms = librosa.feature.rms(y=y_utt, frame_length=2048, hop_length=256)[0]
         rms_db = librosa.amplitude_to_db(rms, ref=np.max)
 
         frame_dur = utterance_duration / len(rms) if len(rms) > 0 else 0
-        is_silent = rms_db < -28
+        is_silent = rms_db < -30
 
         pauses = []
         curr = 0.0
@@ -259,11 +270,9 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         short_breaks = len([d for d in pauses if 0.05 <= d < 0.25])
         long_pauses = len([d for d in pauses if d >= 0.25])
 
-        # 4 measures
         speech_rate = syllable_count / utterance_duration if utterance_duration > 0 else 0.0
         articulation_rate = syllable_count / speech_only_duration if speech_only_duration > 0 else 0.0
 
-        # stricter run count: both short and long breaks matter
         weighted_breaks = short_breaks + (long_pauses * 1.5)
         n_runs = max(1.0, 1.0 + weighted_breaks)
         mean_length_of_run = syllable_count / n_runs
@@ -277,7 +286,6 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
             "Mean length of run": score_mean_length_of_run(mean_length_of_run),
         }
 
-        # weighted total
         weighted_total = (
             profile_scores["Speech rate"] * 0.20 +
             profile_scores["Articulation rate"] * 0.20 +
@@ -285,25 +293,23 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
             profile_scores["Mean length of run"] * 0.30
         )
 
-        # explicit hesitation penalty
-        hesitation_penalty = (short_breaks * 2.0) + (long_pauses * 6.0)
+        hesitation_penalty = (short_breaks * 1.5) + (long_pauses * 5.0)
 
-        # additional rule-based penalty for very broken delivery
         rule_penalty = 0
-        if pause_ratio >= 0.30:
-            rule_penalty += 8
-        elif pause_ratio >= 0.22:
-            rule_penalty += 4
+        if pause_ratio >= 0.32:
+            rule_penalty += 6
+        elif pause_ratio >= 0.24:
+            rule_penalty += 3
 
         if short_breaks >= 5:
-            rule_penalty += 5
+            rule_penalty += 4
         elif short_breaks >= 3:
             rule_penalty += 2
 
         if long_pauses >= 3:
-            rule_penalty += 10
+            rule_penalty += 8
         elif long_pauses >= 2:
-            rule_penalty += 5
+            rule_penalty += 4
 
         total_score = max(0, round(weighted_total - hesitation_penalty - rule_penalty))
 
@@ -339,7 +345,6 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
 
     except Exception:
         return None
-
 
 @st.cache_resource
 def get_native_audio_and_analysis(text, syllable_count, target_sps_range):

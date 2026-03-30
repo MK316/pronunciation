@@ -516,6 +516,9 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
 
     c.setTitle("Fluency Feedback Report")
 
+    # ---------------------------
+    # Header
+    # ---------------------------
     c.setFont("Helvetica-Bold", 17)
     c.drawString(margin_x, y, "Fluency Feedback Report")
     y -= 10 * mm
@@ -534,6 +537,9 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     c.drawString(margin_x, y, f"Report generated time: {end_time}")
     y -= 10 * mm
 
+    # ---------------------------
+    # Average result
+    # ---------------------------
     c.setFont("Helvetica-Bold", 13)
     c.drawString(margin_x, y, "Average result")
     y -= 8 * mm
@@ -544,56 +550,122 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     c.drawString(margin_x, y, f"Interpretation: {band_text}")
     y -= 10 * mm
 
+    # ---------------------------
+    # Mini profile table (2 x 2)
+    # ---------------------------
     c.setFont("Helvetica-Bold", 12)
     c.drawString(margin_x, y, "Mini profile")
     y -= 8 * mm
 
-    c.setFont("Helvetica", 10.5)
-    desc_lines = [
-        f"Speech rate: {avg_metrics['speech_rate']:.2f}   -> overall pace",
-        f"Articulation rate: {avg_metrics['articulation_rate']:.2f}   -> speed during actual speaking",
-        f"Pause ratio: {avg_metrics['pause_ratio']:.2f}   -> how much silence interrupts delivery",
-        f"Mean length of run: {avg_metrics['mlr']:.2f}   -> how long the speaker continues smoothly",
+    table_x = margin_x
+    table_y_top = y
+    table_w = width - 2 * margin_x
+    col_w = table_w / 2
+    row_h = 16 * mm
+
+    rows = [
+        [
+            f"Speech rate\n{avg_metrics['speech_rate']:.2f}\nOverall pace",
+            f"Articulation rate\n{avg_metrics['articulation_rate']:.2f}\nSpeed during actual speaking",
+        ],
+        [
+            f"Pause ratio\n{avg_metrics['pause_ratio']:.2f}\nHow much silence interrupts delivery",
+            f"Mean length of run\n{avg_metrics['mlr']:.2f}\nHow long the speaker continues smoothly",
+        ],
     ]
-    for line in desc_lines:
-        c.drawString(margin_x, y, line)
-        y -= 6 * mm
 
-    y -= 4 * mm
+    # Draw table borders
+    c.setStrokeColor(colors.black)
+    for r in range(3):
+        y_line = table_y_top - r * row_h
+        c.line(table_x, y_line, table_x + table_w, y_line)
+    c.line(table_x, table_y_top, table_x, table_y_top - 2 * row_h)
+    c.line(table_x + col_w, table_y_top, table_x + col_w, table_y_top - 2 * row_h)
+    c.line(table_x + table_w, table_y_top, table_x + table_w, table_y_top - 2 * row_h)
 
+    # Fill table text
+    c.setFont("Helvetica", 10)
+    padding_x = 4 * mm
+    padding_y = 5 * mm
+
+    for r in range(2):
+        for col in range(2):
+            cell_x = table_x + col * col_w + padding_x
+            cell_top = table_y_top - r * row_h - padding_y
+
+            parts = rows[r][col].split("\n")
+            c.setFont("Helvetica-Bold", 10.5)
+            c.drawString(cell_x, cell_top, parts[0])
+
+            c.setFont("Helvetica", 10)
+            c.drawString(cell_x, cell_top - 5 * mm, parts[1])
+
+            text_y = cell_top - 10 * mm
+            wrapped = textwrap.wrap(parts[2], width=28)
+            for line in wrapped:
+                c.drawString(cell_x, text_y, line)
+                text_y -= 4.5 * mm
+
+    y = table_y_top - 2 * row_h - 10 * mm
+
+    # ---------------------------
+    # Radar chart
+    # ---------------------------
     radar_img = make_radar_png(avg_profile_scores)
     img_reader = ImageReader(radar_img)
-    img_w = 115 * mm
-    img_h = 115 * mm
-    c.drawImage(img_reader, margin_x, y - img_h + 8 * mm, width=img_w, height=img_h, preserveAspectRatio=True, mask="auto")
 
-    text_x = margin_x + img_w + 10 * mm
-    text_y = y
+    img_w = 90 * mm
+    img_h = 90 * mm
+    img_x = (width - img_w) / 2
 
+    c.drawImage(
+        img_reader,
+        img_x,
+        y - img_h,
+        width=img_w,
+        height=img_h,
+        preserveAspectRatio=True,
+        mask="auto"
+    )
+
+    y -= img_h + 10 * mm
+
+    # ---------------------------
+    # How to read this profile
+    # ---------------------------
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(text_x, text_y, "How to read this profile")
-    text_y -= 8 * mm
+    c.drawString(margin_x, y, "How to read this profile")
+    y -= 8 * mm
+
+    explain_lines = [
+        "Speech rate shows the overall pace across the full selected utterance.",
+        "Articulation rate shows how fast the speaker moves during actual speech, excluding silent intervals.",
+        "Pause ratio shows how much silence interrupts delivery. Lower values are better.",
+        "Mean length of run shows how long the speaker can continue smoothly before a noticeable break.",
+        f"In this report, the overall performance is interpreted as: {band_text}.",
+    ]
 
     c.setFont("Helvetica", 10.5)
-    text_lines = [
-        "Higher Speech rate means a steadier overall pace.",
-        "Higher Articulation rate means faster movement during actual speech.",
-        "Lower Pause ratio means fewer interruptions from silence.",
-        "Higher Mean length of run means longer smooth chunks of speech.",
-    ]
-    for line in text_lines:
-        c.drawString(text_x, text_y, line)
-        text_y -= 6 * mm
+    for paragraph in explain_lines:
+        wrapped = textwrap.wrap(paragraph, width=90)
+        for line in wrapped:
+            c.drawString(margin_x, y, line)
+            y -= 5.5 * mm
+        y -= 1.5 * mm
 
-    text_y -= 4 * mm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(text_x, text_y, "Profile scores")
-    text_y -= 7 * mm
+    y -= 2 * mm
+
+    # ---------------------------
+    # Profile scores
+    # ---------------------------
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin_x, y, "Profile scores")
+    y -= 8 * mm
 
     c.setFont("Helvetica", 10.5)
     for k in ["Speech rate", "Articulation rate", "Pause ratio", "Mean length of run"]:
-        c.drawString(text_x, text_y, f"{k}: {avg_profile_scores[k]:.1f}")
-        text_y -= 6 * mm
+        c.drawString(margin_x, y, f"{k}: {avg_profile_scores[k]:.1f}")
+        y -= 5.5 * mm
 
     c.showPage()
     c.save()

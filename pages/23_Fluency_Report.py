@@ -505,6 +505,9 @@ def make_radar_png(profile_scores):
     buf.seek(0)
     return buf
 
+# ----------
+# PDF report
+# -----------
 
 def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg_profile_scores, avg_metrics, band_text):
     pdf_buffer = io.BytesIO()
@@ -512,7 +515,6 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     width, height = A4
 
     margin_x = 18 * mm
-    margin_y = 18 * mm
     y = height - 20 * mm
 
     c.setTitle("Fluency Feedback Report")
@@ -560,30 +562,35 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
 
     content_top = y
 
-    # Left area: 1 x 4 vertical table
+    # Left area: 1 x 4 table, each row split into content + profile score
     left_x = margin_x
-    left_w = 78 * mm
+    left_w = 82 * mm
+    score_col_w = 24 * mm
+    info_col_w = left_w - score_col_w
     row_h = 16 * mm
     table_top = content_top
 
     table_rows = [
-        ("Speech rate", "Expected: 2.8-5.2", f"{avg_metrics['speech_rate']:.2f}"),
-        ("Articulation rate", "Expected: 3.5-6.0", f"{avg_metrics['articulation_rate']:.2f}"),
-        ("Pause ratio", "Expected: lower is better", f"{avg_metrics['pause_ratio']:.2f}"),
-        ("Mean length of run", "Expected: 6.0+ desirable", f"{avg_metrics['mlr']:.2f}"),
+        ("Speech rate", "Expected: 2.8-5.2", f"{avg_metrics['speech_rate']:.2f}", f"{avg_profile_scores['Speech rate']:.1f} / 100"),
+        ("Articulation rate", "Expected: 3.5-6.0", f"{avg_metrics['articulation_rate']:.2f}", f"{avg_profile_scores['Articulation rate']:.1f} / 100"),
+        ("Pause ratio", "Expected: lower is better", f"{avg_metrics['pause_ratio']:.2f}", f"{avg_profile_scores['Pause ratio']:.1f} / 100"),
+        ("Mean length of run", "Expected: 6.0+ desirable", f"{avg_metrics['mlr']:.2f}", f"{avg_profile_scores['Mean length of run']:.1f} / 100"),
     ]
 
-    # Table border
     c.setStrokeColor(colors.black)
     c.rect(left_x, table_top - 4 * row_h, left_w, 4 * row_h, stroke=1, fill=0)
+
     for i in range(1, 4):
         y_line = table_top - i * row_h
         c.line(left_x, y_line, left_x + left_w, y_line)
 
-    # Fill table
+    c.line(left_x + info_col_w, table_top, left_x + info_col_w, table_top - 4 * row_h)
+
     pad_x = 4 * mm
-    for i, (title, expected, value) in enumerate(table_rows):
+    for i, (title, expected, value, score_text) in enumerate(table_rows):
         cell_top = table_top - i * row_h - 4 * mm
+
+        # Left content area
         c.setFont("Helvetica-Bold", 10)
         c.drawString(left_x + pad_x, cell_top, title)
 
@@ -593,12 +600,20 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
         c.setFont("Helvetica-Bold", 11.5)
         c.drawString(left_x + pad_x, cell_top - 10 * mm, value)
 
+        # Right score area
+        score_x = left_x + info_col_w + 2.5 * mm
+        c.setFont("Helvetica", 8.2)
+        c.drawString(score_x, cell_top, "Profile score")
+
+        c.setFont("Helvetica-Bold", 10.5)
+        c.drawString(score_x, cell_top - 7 * mm, score_text)
+
     # Right area: radar chart
     radar_img = make_radar_png(avg_profile_scores)
     img_reader = ImageReader(radar_img)
 
-    chart_w = 82 * mm
-    chart_h = 82 * mm
+    chart_w = 80 * mm
+    chart_h = 80 * mm
     chart_x = width - margin_x - chart_w
     chart_y = content_top - chart_h + 2 * mm
 
@@ -612,7 +627,6 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
         mask="auto"
     )
 
-    # Move y below both blocks
     block_bottom = min(table_top - 4 * row_h, chart_y)
     y = block_bottom - 10 * mm
 
@@ -638,24 +652,13 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
             y -= 5.2 * mm
         y -= 1 * mm
 
-    y -= 2 * mm
-
-    # ---------------------------
-    # Profile scores
-    # ---------------------------
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(margin_x, y, "Profile scores")
-    y -= 8 * mm
-
-    c.setFont("Helvetica", 10.5)
-    for k in ["Speech rate", "Articulation rate", "Pause ratio", "Mean length of run"]:
-        c.drawString(margin_x, y, f"{k}: {avg_profile_scores[k]:.1f}")
-        y -= 5.2 * mm
-
     c.showPage()
     c.save()
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
+
+
+
 # --------------------------------------------------
 # 4. App header and start gate
 # --------------------------------------------------

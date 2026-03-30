@@ -84,7 +84,6 @@ def convert_to_wav(audio_bytes):
     wav_io.seek(0)
     return wav_io
 
-
 def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=False):
     try:
         wav_io = convert_to_wav(audio_bytes)
@@ -93,26 +92,61 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         # Full recorded duration
         total_duration = librosa.get_duration(y=y, sr=sr)
 
-        # Noise / silence guard
+        # Very low-energy rejection
         rms_mean = np.sqrt(np.mean(y**2))
-        if is_student and rms_mean < 0.01:
+        if is_student and rms_mean < 0.005:
             return None
 
-        y = librosa.util.normalize(y)
+        # --------------------------------------------------
+        # 1. Detect speech intervals more conservatively
+        # --------------------------------------------------
+        intervals = librosa.effects.split(
+            y,
+            top_db=20,          # stricter than 30
+            frame_length=2048,
+            hop_length=256
+        )
 
-        # Trim leading and trailing silence
-        y_trim, _ = librosa.effects.trim(y, top_db=30)
-        utterance_duration = librosa.get_duration(y=y_trim, sr=sr)
+        # Remove tiny intervals that are likely noise bursts
+        min_seg_dur = 0.12  # seconds
+        filtered = []
+        for start, end in intervals:
+            seg_dur = (end - start) / sr
+            if seg_dur >= min_seg_dur:
+                filtered.append([start, end])
 
-        if is_student and utterance_duration < 1.2:
+        if len(filtered) == 0:
             return None
 
-        # Pause analysis
-        rms = librosa.feature.rms(y=y_trim)[0]
+        # Merge intervals separated by very short gaps
+        merged = [filtered[0]]
+        merge_gap = 0.18 * sr  # 180 ms
+        for start, end in filtered[1:]:
+            prev_start, prev_end = merged[-1]
+            if start - prev_end <= merge_gap:
+                merged[-1][1] = end
+            else:
+                merged.append([start, end])
+
+        # Utterance duration:
+        # from first detected speech to last detected speech
+        speech_start = merged[0][0]
+        speech_end = merged[-1][1]
+
+        y_utt = y[speech_start:speech_end]
+        utterance_duration = librosa.get_duration(y=y_utt, sr=sr)
+
+        if is_student and utterance_duration < 1.0:
+            return None
+
+        # --------------------------------------------------
+        # 2. Pause analysis inside the utterance window
+        # --------------------------------------------------
+        rms = librosa.feature.rms(y=y_utt, frame_length=2048, hop_length=256)[0]
         rms_db = librosa.amplitude_to_db(rms, ref=np.max)
 
         frame_dur = utterance_duration / len(rms) if len(rms) > 0 else 0
-        is_silent = rms_db < -30
+        is_silent = rms_db < -28
 
         pauses = []
         curr = 0.0
@@ -129,7 +163,9 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         short_breaks = len([d for d in pauses if 0.05 <= d < 0.25])
         long_pauses = len([d for d in pauses if d >= 0.25])
 
-        # SPS / SPM
+        # --------------------------------------------------
+        # 3. SPS / SPM
+        # --------------------------------------------------
         sps = syllable_count / utterance_duration if utterance_duration > 0 else 0
         rate_spm = sps * 60
 
@@ -147,6 +183,11 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
 
         total_score = int(round(speed_score + conn_score))
 
+        # Extra transparency values
+        speech_only_duration = sum((end - start) / sr for start, end in merged)
+        leading_silence = speech_start / sr
+        trailing_silence = total_duration - (speech_end / sr)
+
         return {
             "rate": rate_spm,
             "sps": sps,
@@ -156,8 +197,12 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
             "wav": wav_io.getvalue(),
             "total_duration": total_duration,
             "utterance_duration": utterance_duration,
+            "speech_only_duration": speech_only_duration,
+            "leading_silence": leading_silence,
+            "trailing_silence": trailing_silence,
             "syllable_count": syllable_count,
             "pause_list": pauses,
+            "speech_intervals": [(s / sr, e / sr) for s, e in merged],
         }
 
     except Exception:

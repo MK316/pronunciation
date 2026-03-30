@@ -6,4 +6,9 @@ plotly
 pydub
 soundfile
 gTTS
+
+reportlab
 matplotlib
+soundfile
+audioread
+ffmpeg-python

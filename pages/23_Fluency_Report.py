@@ -561,16 +561,32 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     table_y_top = y
     table_w = width - 2 * margin_x
     col_w = table_w / 2
-    row_h = 16 * mm
+    row_h = 18 * mm
 
     rows = [
         [
-            f"Speech rate\n{avg_metrics['speech_rate']:.2f}\nOverall pace",
-            f"Articulation rate\n{avg_metrics['articulation_rate']:.2f}\nSpeed during actual speaking",
+            {
+                "title": "Speech rate",
+                "range": "Expected range: 2.8-5.2",
+                "value": f"{avg_metrics['speech_rate']:.2f}",
+            },
+            {
+                "title": "Articulation rate",
+                "range": "Expected range: 3.5-6.0",
+                "value": f"{avg_metrics['articulation_rate']:.2f}",
+            },
         ],
         [
-            f"Pause ratio\n{avg_metrics['pause_ratio']:.2f}\nHow much silence interrupts delivery",
-            f"Mean length of run\n{avg_metrics['mlr']:.2f}\nHow long the speaker continues smoothly",
+            {
+                "title": "Pause ratio",
+                "range": "Expected range: lower is better",
+                "value": f"{avg_metrics['pause_ratio']:.2f}",
+            },
+            {
+                "title": "Mean length of run",
+                "range": "Expected range: 6.0+ desirable",
+                "value": f"{avg_metrics['mlr']:.2f}",
+            },
         ],
     ]
 
@@ -584,27 +600,23 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     c.line(table_x + table_w, table_y_top, table_x + table_w, table_y_top - 2 * row_h)
 
     # Fill table text
-    c.setFont("Helvetica", 10)
     padding_x = 4 * mm
     padding_y = 5 * mm
 
     for r in range(2):
         for col in range(2):
+            cell = rows[r][col]
             cell_x = table_x + col * col_w + padding_x
             cell_top = table_y_top - r * row_h - padding_y
 
-            parts = rows[r][col].split("\n")
             c.setFont("Helvetica-Bold", 10.5)
-            c.drawString(cell_x, cell_top, parts[0])
+            c.drawString(cell_x, cell_top, cell["title"])
 
-            c.setFont("Helvetica", 10)
-            c.drawString(cell_x, cell_top - 5 * mm, parts[1])
+            c.setFont("Helvetica", 9.5)
+            c.drawString(cell_x, cell_top - 5 * mm, cell["range"])
 
-            text_y = cell_top - 10 * mm
-            wrapped = textwrap.wrap(parts[2], width=28)
-            for line in wrapped:
-                c.drawString(cell_x, text_y, line)
-                text_y -= 4.5 * mm
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(cell_x, cell_top - 11 * mm, cell["value"])
 
     y = table_y_top - 2 * row_h - 10 * mm
 
@@ -642,7 +654,6 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
         "Articulation rate shows how fast the speaker moves during actual speech, excluding silent intervals.",
         "Pause ratio shows how much silence interrupts delivery. Lower values are better.",
         "Mean length of run shows how long the speaker can continue smoothly before a noticeable break.",
-        f"In this report, the overall performance is interpreted as: {band_text}.",
     ]
 
     c.setFont("Helvetica", 10.5)
@@ -671,7 +682,6 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     c.save()
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
-
 
 # --------------------------------------------------
 # 4. App header and start gate

@@ -512,6 +512,7 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     width, height = A4
 
     margin_x = 18 * mm
+    margin_y = 18 * mm
     y = height - 20 * mm
 
     c.setTitle("Fluency Feedback Report")
@@ -551,96 +552,69 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     y -= 10 * mm
 
     # ---------------------------
-    # Mini profile table (2 x 2)
+    # Mini profile + radar chart side by side
     # ---------------------------
     c.setFont("Helvetica-Bold", 12)
     c.drawString(margin_x, y, "Mini profile")
     y -= 8 * mm
 
-    table_x = margin_x
-    table_y_top = y
-    table_w = width - 2 * margin_x
-    col_w = table_w / 2
-    row_h = 18 * mm
+    content_top = y
 
-    rows = [
-        [
-            {
-                "title": "Speech rate",
-                "range": "Expected range: 2.8-5.2",
-                "value": f"{avg_metrics['speech_rate']:.2f}",
-            },
-            {
-                "title": "Articulation rate",
-                "range": "Expected range: 3.5-6.0",
-                "value": f"{avg_metrics['articulation_rate']:.2f}",
-            },
-        ],
-        [
-            {
-                "title": "Pause ratio",
-                "range": "Expected range: lower is better",
-                "value": f"{avg_metrics['pause_ratio']:.2f}",
-            },
-            {
-                "title": "Mean length of run",
-                "range": "Expected range: 6.0+ desirable",
-                "value": f"{avg_metrics['mlr']:.2f}",
-            },
-        ],
+    # Left area: 1 x 4 vertical table
+    left_x = margin_x
+    left_w = 78 * mm
+    row_h = 16 * mm
+    table_top = content_top
+
+    table_rows = [
+        ("Speech rate", "Expected: 2.8-5.2", f"{avg_metrics['speech_rate']:.2f}"),
+        ("Articulation rate", "Expected: 3.5-6.0", f"{avg_metrics['articulation_rate']:.2f}"),
+        ("Pause ratio", "Expected: lower is better", f"{avg_metrics['pause_ratio']:.2f}"),
+        ("Mean length of run", "Expected: 6.0+ desirable", f"{avg_metrics['mlr']:.2f}"),
     ]
 
-    # Draw table borders
+    # Table border
     c.setStrokeColor(colors.black)
-    for r in range(3):
-        y_line = table_y_top - r * row_h
-        c.line(table_x, y_line, table_x + table_w, y_line)
-    c.line(table_x, table_y_top, table_x, table_y_top - 2 * row_h)
-    c.line(table_x + col_w, table_y_top, table_x + col_w, table_y_top - 2 * row_h)
-    c.line(table_x + table_w, table_y_top, table_x + table_w, table_y_top - 2 * row_h)
+    c.rect(left_x, table_top - 4 * row_h, left_w, 4 * row_h, stroke=1, fill=0)
+    for i in range(1, 4):
+        y_line = table_top - i * row_h
+        c.line(left_x, y_line, left_x + left_w, y_line)
 
-    # Fill table text
-    padding_x = 4 * mm
-    padding_y = 5 * mm
+    # Fill table
+    pad_x = 4 * mm
+    for i, (title, expected, value) in enumerate(table_rows):
+        cell_top = table_top - i * row_h - 4 * mm
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(left_x + pad_x, cell_top, title)
 
-    for r in range(2):
-        for col in range(2):
-            cell = rows[r][col]
-            cell_x = table_x + col * col_w + padding_x
-            cell_top = table_y_top - r * row_h - padding_y
+        c.setFont("Helvetica", 8.8)
+        c.drawString(left_x + pad_x, cell_top - 4.5 * mm, expected)
 
-            c.setFont("Helvetica-Bold", 10.5)
-            c.drawString(cell_x, cell_top, cell["title"])
+        c.setFont("Helvetica-Bold", 11.5)
+        c.drawString(left_x + pad_x, cell_top - 10 * mm, value)
 
-            c.setFont("Helvetica", 9.5)
-            c.drawString(cell_x, cell_top - 5 * mm, cell["range"])
-
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(cell_x, cell_top - 11 * mm, cell["value"])
-
-    y = table_y_top - 2 * row_h - 10 * mm
-
-    # ---------------------------
-    # Radar chart
-    # ---------------------------
+    # Right area: radar chart
     radar_img = make_radar_png(avg_profile_scores)
     img_reader = ImageReader(radar_img)
 
-    img_w = 90 * mm
-    img_h = 90 * mm
-    img_x = (width - img_w) / 2
+    chart_w = 82 * mm
+    chart_h = 82 * mm
+    chart_x = width - margin_x - chart_w
+    chart_y = content_top - chart_h + 2 * mm
 
     c.drawImage(
         img_reader,
-        img_x,
-        y - img_h,
-        width=img_w,
-        height=img_h,
+        chart_x,
+        chart_y,
+        width=chart_w,
+        height=chart_h,
         preserveAspectRatio=True,
         mask="auto"
     )
 
-    y -= img_h + 10 * mm
+    # Move y below both blocks
+    block_bottom = min(table_top - 4 * row_h, chart_y)
+    y = block_bottom - 10 * mm
 
     # ---------------------------
     # How to read this profile
@@ -658,11 +632,11 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
 
     c.setFont("Helvetica", 10.5)
     for paragraph in explain_lines:
-        wrapped = textwrap.wrap(paragraph, width=90)
+        wrapped = textwrap.wrap(paragraph, width=92)
         for line in wrapped:
             c.drawString(margin_x, y, line)
-            y -= 5.5 * mm
-        y -= 1.5 * mm
+            y -= 5.2 * mm
+        y -= 1 * mm
 
     y -= 2 * mm
 
@@ -676,13 +650,12 @@ def build_pdf_report(user_name, start_time, end_time, level_name, avg_score, avg
     c.setFont("Helvetica", 10.5)
     for k in ["Speech rate", "Articulation rate", "Pause ratio", "Mean length of run"]:
         c.drawString(margin_x, y, f"{k}: {avg_profile_scores[k]:.1f}")
-        y -= 5.5 * mm
+        y -= 5.2 * mm
 
     c.showPage()
     c.save()
     pdf_buffer.seek(0)
     return pdf_buffer.getvalue()
-
 # --------------------------------------------------
 # 4. App header and start gate
 # --------------------------------------------------

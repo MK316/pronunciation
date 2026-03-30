@@ -214,7 +214,7 @@ def overall_feedback(avg_score, avg_sps, avg_staccato, avg_pause, target_sps_ran
 # --------------------------------------------------
 # 4. UI header
 # --------------------------------------------------
-st.title("📊 Fluency Score Analyzer")
+st.title("📊 Speaking Rate Analyzer")
 st.caption("Record 3 short sentences. Your final result is based on the average of all 3 trials.")
 
 level_name = st.selectbox(

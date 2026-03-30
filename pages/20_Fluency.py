@@ -63,17 +63,17 @@ LEVELS = {
 # --------------------------------------------------
 # 3. Helpers
 # --------------------------------------------------
+def init_level_state(level_name):
+    if level_name not in st.session_state.results:
+        st.session_state.results[level_name] = {}
+
+
 def reset_level_progress():
     level = st.session_state.selected_level
     st.session_state.results[level] = {}
     st.session_state.current_idx = 0
     st.session_state.widget_id += 1
     st.rerun()
-
-
-def init_level_state(level_name):
-    if level_name not in st.session_state.results:
-        st.session_state.results[level_name] = {}
 
 
 def convert_to_wav(audio_bytes):
@@ -90,24 +90,24 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         wav_io = convert_to_wav(audio_bytes)
         y, sr = librosa.load(wav_io, sr=16000)
 
-        # Full recorded duration before trimming
+        # Full recorded duration
         total_duration = librosa.get_duration(y=y, sr=sr)
 
-        # Basic silence / noise guard
+        # Noise / silence guard
         rms_mean = np.sqrt(np.mean(y**2))
         if is_student and rms_mean < 0.01:
             return None
 
         y = librosa.util.normalize(y)
 
-        # Trim leading/trailing silence
+        # Trim leading and trailing silence
         y_trim, _ = librosa.effects.trim(y, top_db=30)
         utterance_duration = librosa.get_duration(y=y_trim, sr=sr)
 
         if is_student and utterance_duration < 1.2:
             return None
 
-        # RMS-based pause estimate
+        # Pause analysis
         rms = librosa.feature.rms(y=y_trim)[0]
         rms_db = librosa.amplitude_to_db(rms, ref=np.max)
 
@@ -115,34 +115,34 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
         is_silent = rms_db < -30
 
         pauses = []
-        curr = 0
+        curr = 0.0
         for s in is_silent:
             if s:
                 curr += frame_dur
             else:
                 if curr > 0:
                     pauses.append(curr)
-                curr = 0
+                curr = 0.0
         if curr > 0:
             pauses.append(curr)
 
         short_breaks = len([d for d in pauses if 0.05 <= d < 0.25])
         long_pauses = len([d for d in pauses if d >= 0.25])
 
-        # SPS / SPM based on trimmed utterance duration
+        # SPS / SPM
         sps = syllable_count / utterance_duration if utterance_duration > 0 else 0
         rate_spm = sps * 60
 
         low, high = target_sps_range
 
-        # Speed score (60)
+        # Speed score
         if low <= sps <= high:
             speed_score = 60
         else:
             dist = min(abs(sps - low), abs(sps - high))
             speed_score = max(20, 60 - (dist * 20))
 
-        # Connectivity score (40)
+        # Connectivity score
         conn_score = max(0, 40 - (short_breaks * 5) - (long_pauses * 10))
 
         total_score = int(round(speed_score + conn_score))
@@ -163,12 +163,14 @@ def analyze_and_score(audio_bytes, syllable_count, target_sps_range, is_student=
     except Exception:
         return None
 
+
 @st.cache_resource
 def get_native_audio_and_analysis(text, syllable_count, target_sps_range):
     tts = gTTS(text=text, lang="en", tld="com")
     mp3_fp = io.BytesIO()
     tts.write_to_fp(mp3_fp)
     mp3_bytes = mp3_fp.getvalue()
+
     native_res = analyze_and_score(
         mp3_bytes,
         syllable_count=syllable_count,
@@ -184,9 +186,9 @@ def trial_feedback(res, target_sps_range):
     if res["score"] >= 90:
         return "Excellent fluency. Your speed and connected speech are both very strong."
     elif low <= res["sps"] <= high:
-        if res["pause"] > 1:
+        if res["long_pauses"] > 1:
             return "Your speaking rate is appropriate. Try to reduce long pauses for smoother delivery."
-        elif res["staccato"] > 2:
+        elif res["short_breaks"] > 2:
             return "Your speed is appropriate, but the rhythm sounds slightly broken. Focus on smoother chunking."
         else:
             return "Good job. Your speed is stable and your speech is fairly connected."
@@ -197,7 +199,7 @@ def trial_feedback(res, target_sps_range):
             return "You are speaking a bit too fast. Try to keep a steady rhythm and clearer phrasing."
 
 
-def overall_feedback(avg_score, avg_sps, avg_staccato, avg_pause, target_sps_range):
+def overall_feedback(avg_score, avg_sps, avg_short_breaks, avg_long_pauses, target_sps_range):
     low, high = target_sps_range
 
     if avg_score >= 90:
@@ -209,7 +211,7 @@ def overall_feedback(avg_score, avg_sps, avg_staccato, avg_pause, target_sps_ran
             return "Your performance is fairly consistent, but your overall speed is slightly slow. Practice speaking in larger chunks."
         elif avg_sps > high:
             return "Your performance is fairly consistent, but your overall speed is slightly fast. Slow down a little for clearer phrasing."
-        elif avg_pause >= 2:
+        elif avg_long_pauses >= 2:
             return "Your speed is acceptable overall, but reducing long pauses will improve your fluency."
         else:
             return "Good progress. More repetition will help make your speech smoother and more natural."
@@ -218,10 +220,10 @@ def overall_feedback(avg_score, avg_sps, avg_staccato, avg_pause, target_sps_ran
 
 
 # --------------------------------------------------
-# 4. UI header
+# 4. UI
 # --------------------------------------------------
-st.title("📊 Speaking Rate Analyzer")
-st.caption("Record 3 short sentences. Your final result is based on the average of all 3 trials.")
+st.title("📊 Fluency Score Analyzer")
+st.caption("Record 3 short sentences. The final result is based on the average of all 3 trials.")
 
 level_name = st.selectbox(
     "Choose your level",
@@ -261,24 +263,31 @@ native = get_native_audio_and_analysis(
 with st.expander("🎧 Listen to the model sentence", expanded=True):
     if native:
         st.audio(native["wav"], format="audio/wav")
+        st.caption(
+            f"Model SPS: {native['sps']:.2f} | "
+            f"Analyzed speaking duration: {native['utterance_duration']:.2f} sec"
+        )
+
+st.divider()
 
 # --------------------------------------------------
 # 5. Recorder
 # --------------------------------------------------
-st.divider()
-
 col1, col2, col3 = st.columns([1.5, 1, 1])
+
 with col1:
     audio_data = mic_recorder(
         start_prompt="🔴 Start recording",
         stop_prompt="⏹️ Stop and analyze",
         key=f"rec_{level_name}_{trial_num}_{st.session_state.widget_id}",
     )
+
 with col2:
     if st.button("⬅️ Previous", disabled=(trial_num == 0)):
         st.session_state.current_idx -= 1
         st.session_state.widget_id += 1
         st.rerun()
+
 with col3:
     if st.button("🔄 Reset this level"):
         reset_level_progress()
@@ -313,17 +322,27 @@ if trial_num in level_results:
 
     m1, m2, m3 = st.columns(3)
     m1.metric("SPS", f"{res['sps']:.2f}", delta=f"Target: {target_sps_range[0]}~{target_sps_range[1]}")
-    m2.metric("Short breaks", f"{res['staccato']}", delta_color="inverse")
-    m3.metric("Long pauses", f"{res['pause']}", delta_color="inverse")
+    m2.metric("Short breaks", f"{res['short_breaks']}", delta_color="inverse")
+    m3.metric("Long pauses", f"{res['long_pauses']}", delta_color="inverse")
+
+    m4, m5, m6 = st.columns(3)
+    m4.metric("Recorded duration", f"{res['total_duration']:.2f} sec")
+    m5.metric("Analyzed speaking duration", f"{res['utterance_duration']:.2f} sec")
+    m6.metric("Preset syllable count", f"{res['syllable_count']}")
+
+    st.caption(
+        f"SPS = preset syllable count / analyzed speaking duration = "
+        f"{res['syllable_count']} / {res['utterance_duration']:.2f} = {res['sps']:.2f}"
+    )
 
     st.write("**Feedback**")
     st.info(trial_feedback(res, target_sps_range))
 
-# --------------------------------------------------
-# 7. Navigation to next sentence
-# --------------------------------------------------
 st.divider()
 
+# --------------------------------------------------
+# 7. Next sentence
+# --------------------------------------------------
 if trial_num < 2:
     if trial_num in level_results:
         if st.button("➡️ Go to next sentence"):
@@ -334,7 +353,7 @@ if trial_num < 2:
         st.caption("Record this sentence first to move to the next one.")
 
 # --------------------------------------------------
-# 8. Final summary after 3 trials
+# 8. Final average result
 # --------------------------------------------------
 if len(level_results) == 3:
     st.divider()
@@ -344,8 +363,11 @@ if len(level_results) == 3:
 
     avg_score = float(np.mean([r["score"] for r in ordered_results]))
     avg_sps = float(np.mean([r["sps"] for r in ordered_results]))
-    avg_staccato = float(np.mean([r["staccato"] for r in ordered_results]))
-    avg_pause = float(np.mean([r["pause"] for r in ordered_results]))
+    avg_short_breaks = float(np.mean([r["short_breaks"] for r in ordered_results]))
+    avg_long_pauses = float(np.mean([r["long_pauses"] for r in ordered_results]))
+    avg_total_duration = float(np.mean([r["total_duration"] for r in ordered_results]))
+    avg_utterance_duration = float(np.mean([r["utterance_duration"] for r in ordered_results]))
+    avg_syllables = float(np.mean([r["syllable_count"] for r in ordered_results]))
 
     final_color = "green" if avg_score >= 80 else "orange" if avg_score >= 60 else "red"
 
@@ -354,10 +376,14 @@ if len(level_results) == 3:
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Average SPS", f"{avg_sps:.2f}")
-    c2.metric("Average short breaks", f"{avg_staccato:.2f}")
-    c3.metric("Average long pauses", f"{avg_pause:.2f}")
+    c2.metric("Average short breaks", f"{avg_short_breaks:.2f}")
+    c3.metric("Average long pauses", f"{avg_long_pauses:.2f}")
 
-    # Trial score chart
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Avg recorded duration", f"{avg_total_duration:.2f} sec")
+    c5.metric("Avg analyzed speaking duration", f"{avg_utterance_duration:.2f} sec")
+    c6.metric("Avg preset syllable count", f"{avg_syllables:.1f}")
+
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
@@ -377,7 +403,7 @@ if len(level_results) == 3:
     st.plotly_chart(fig, use_container_width=True)
 
     st.write("**Overall feedback**")
-    st.success(overall_feedback(avg_score, avg_sps, avg_staccato, avg_pause, target_sps_range))
+    st.success(overall_feedback(avg_score, avg_sps, avg_short_breaks, avg_long_pauses, target_sps_range))
 
     with st.expander("See sentence-by-sentence summary"):
         for i, r in enumerate(ordered_results, start=1):
@@ -386,8 +412,11 @@ if len(level_results) == 3:
 **Sentence {i}**
 - Score: {r['score']}
 - SPS: {r['sps']:.2f}
-- Short breaks: {r['staccato']}
-- Long pauses: {r['pause']}
+- Recorded duration: {r['total_duration']:.2f} sec
+- Analyzed speaking duration: {r['utterance_duration']:.2f} sec
+- Preset syllable count: {r['syllable_count']}
+- Short breaks: {r['short_breaks']}
+- Long pauses: {r['long_pauses']}
 """
             )
 
